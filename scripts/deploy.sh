@@ -561,9 +561,26 @@ ensure_swap() {
   echo "Swap ready: $(swapon --show | grep "${swapfile}" || swapon --show)"
 }
 
+wait_for_backend() {
+  echo "Waiting for backend to become ready ..."
+  local attempt
+  for attempt in $(seq 1 30); do
+    if curl -fsS "https://${DOMAIN}/api/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 verify_deployment() {
   echo "Verifying browser readiness ..."
   local failed=0
+
+  if ! wait_for_backend; then
+    echo "  FAIL: backend did not become ready within 30s" >&2
+    failed=1
+  fi
 
   for svc in "${SERVICES[@]}"; do
     if ! systemctl is-active --quiet "$svc"; then
