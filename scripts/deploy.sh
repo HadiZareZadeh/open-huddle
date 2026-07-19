@@ -362,13 +362,38 @@ configure_nginx_http() {
 }
 
 ensure_tls_params() {
-  if [ ! -f /etc/letsencrypt/options-ssl-nginx.conf ] || [ ! -f /etc/letsencrypt/ssl-dhparams.pem ]; then
-    echo "Downloading recommended TLS parameters ..."
-    mkdir -p /etc/letsencrypt
-    curl -sSf https://raw.githubusercontent.com/certbot/certbot/master/certbot-nginx/certbot_nginx/_internal/tls_configs/options-ssl-nginx.conf \
-      > /etc/letsencrypt/options-ssl-nginx.conf
-    curl -sSf https://raw.githubusercontent.com/certbot/certbot/master/certbot/certbot/ssl-dhparams.pem \
-      > /etc/letsencrypt/ssl-dhparams.pem
+  mkdir -p /etc/letsencrypt
+
+  local packaged_options="/usr/lib/python3/dist-packages/certbot_nginx/_internal/tls_configs/options-ssl-nginx.conf"
+  local packaged_dhparams="/usr/lib/python3/dist-packages/certbot/ssl-dhparams.pem"
+
+  if [ ! -s /etc/letsencrypt/options-ssl-nginx.conf ]; then
+    echo "Installing recommended TLS parameters ..."
+    if [ -f "$packaged_options" ]; then
+      cp "$packaged_options" /etc/letsencrypt/options-ssl-nginx.conf
+    elif curl -sSf https://raw.githubusercontent.com/certbot/certbot/v5.2.2/certbot-nginx/src/certbot_nginx/_internal/tls_configs/options-ssl-nginx.conf \
+      > /etc/letsencrypt/options-ssl-nginx.conf; then
+      :
+    else
+      cat > /etc/letsencrypt/options-ssl-nginx.conf <<'EOF'
+ssl_session_cache shared:le_nginx_SSL:10m;
+ssl_session_timeout 1440m;
+ssl_session_tickets off;
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_prefer_server_ciphers off;
+EOF
+    fi
+  fi
+
+  if [ ! -s /etc/letsencrypt/ssl-dhparams.pem ]; then
+    if [ -f "$packaged_dhparams" ]; then
+      cp "$packaged_dhparams" /etc/letsencrypt/ssl-dhparams.pem
+    elif curl -sSf https://raw.githubusercontent.com/certbot/certbot/v5.2.2/certbot/src/certbot/ssl-dhparams.pem \
+      > /etc/letsencrypt/ssl-dhparams.pem; then
+      :
+    else
+      openssl dhparam -out /etc/letsencrypt/ssl-dhparams.pem 2048
+    fi
   fi
 }
 
