@@ -263,7 +263,8 @@ ensure_git_repo() {
     fi
     echo "Fetching latest from ${repo_url} ..."
     sudo -u "$APP_USER" git -C "$ROOT" fetch origin main
-    sudo -u "$APP_USER" git -C "$ROOT" checkout -B main origin/main
+    sudo -u "$APP_USER" git -C "$ROOT" reset --hard origin/main
+    sudo -u "$APP_USER" git -C "$ROOT" branch -M main
     sudo -u "$APP_USER" git -C "$ROOT" branch --set-upstream-to=origin/main main
     sudo -u "$APP_USER" git -C "$ROOT" config pull.ff only
     return 0
@@ -272,9 +273,15 @@ ensure_git_repo() {
   if [ -n "$(ls -A "$ROOT" 2>/dev/null | grep -v '^\.env$' | grep -v '^data$' || true)" ]; then
     echo "Linking existing deployment at ${ROOT} to ${repo_url} ..."
     sudo -u "$APP_USER" git -C "$ROOT" init
-    sudo -u "$APP_USER" git -C "$ROOT" remote add origin "$repo_url"
+    if sudo -u "$APP_USER" git -C "$ROOT" remote get-url origin >/dev/null 2>&1; then
+      sudo -u "$APP_USER" git -C "$ROOT" remote set-url origin "$repo_url"
+    else
+      sudo -u "$APP_USER" git -C "$ROOT" remote add origin "$repo_url"
+    fi
     sudo -u "$APP_USER" git -C "$ROOT" fetch origin main
-    sudo -u "$APP_USER" git -C "$ROOT" checkout -B main origin/main
+    sudo -u "$APP_USER" git -C "$ROOT" add -A
+    sudo -u "$APP_USER" git -C "$ROOT" reset --hard origin/main
+    sudo -u "$APP_USER" git -C "$ROOT" branch -M main
     sudo -u "$APP_USER" git -C "$ROOT" branch --set-upstream-to=origin/main main
     sudo -u "$APP_USER" git -C "$ROOT" config pull.ff only
     chown -R "${APP_USER}:${APP_USER}" "$ROOT/.git"
