@@ -61,6 +61,9 @@ export const config = {
   rejoinGraceMs: parseInt(process.env.REJOIN_GRACE_MS ?? '30000', 10),
   databasePath: process.env.DATABASE_PATH ?? './data/meetings.db',
   maxParticipants: parseInt(process.env.MAX_PARTICIPANTS ?? '8', 10),
+  requireHostApproval: ['1', 'true', 'yes'].includes(
+    (process.env.REQUIRE_HOST_APPROVAL ?? '').trim().toLowerCase(),
+  ),
   iceServersOverride: parseIceServersOverride(),
   turn: {
     enabled: turnSecret.length > 0,

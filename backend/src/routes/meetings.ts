@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { config } from '../config/index.js';
 import { roomService } from '../services/roomService.js';
 import { getIceServers } from '../services/turnService.js';
 import { createMeetingSchema, meetingIdParamSchema } from '../middleware/schemas.js';
@@ -13,7 +14,9 @@ router.post(
     try {
       const { requireApproval } = req.body;
 
-      const room = roomService.createRoom({ requireApproval: requireApproval ?? false });
+      const room = roomService.createRoom({
+        requireApproval: config.requireHostApproval ? true : (requireApproval ?? false),
+      });
 
       res.status(201).json({
         id: room.id,

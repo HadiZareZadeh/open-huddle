@@ -128,7 +128,9 @@ class RoomService {
 
   createRoom(options: CreateMeetingOptions = {}): MeetingRoom {
     const id = createMeetingId();
-    const requireApproval = options.requireApproval ?? false;
+    const requireApproval = config.requireHostApproval
+      ? true
+      : (options.requireApproval ?? false);
     const now = new Date();
 
     meetingRepository.insertMeeting({

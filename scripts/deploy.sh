@@ -134,6 +134,7 @@ ensure_production_env() {
   set_env_var TURN_HOST "$domain"
   set_env_var CORS_ORIGINS "https://${domain}"
   set_env_var RATE_LIMIT_MAX 100
+  set_env_var REQUIRE_HOST_APPROVAL 1
   set_env_var HOST 0.0.0.0
   set_env_var PORT 3001
   sed -i 's/\r$//' .env 2>/dev/null || true

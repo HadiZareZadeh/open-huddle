@@ -6,7 +6,6 @@ import { createMeeting, ApiError } from '@/services/api';
 export function LandingPage() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
-  const [requireApproval, setRequireApproval] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleCreate = async () => {
@@ -14,9 +13,7 @@ export function LandingPage() {
     setError(null);
 
     try {
-      const meeting = await createMeeting(
-        requireApproval ? { requireApproval: true } : undefined,
-      );
+      const meeting = await createMeeting({ requireApproval: true });
       navigate(`/meeting/${meeting.id}`, {
         state: {
           isCreator: true,
@@ -65,17 +62,9 @@ export function LandingPage() {
             peer-to-peer encryption. No accounts required.
           </p>
 
-          <div className="mx-auto mb-6 w-full max-w-sm space-y-4 rounded-2xl bg-surface-light p-4 text-left sm:mb-8 sm:p-6">
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={requireApproval}
-                onChange={(e) => setRequireApproval(e.target.checked)}
-                className="h-4 w-4 rounded accent-accent"
-              />
-              <span className="text-sm">Require host approval to join</span>
-            </label>
-          </div>
+          <p className="mb-6 text-sm text-gray-400 sm:mb-8">
+            New guests wait in a lobby until the meeting host approves them.
+          </p>
 
           {error && (
             <p className="mb-4 text-sm text-danger" role="alert">
@@ -100,7 +89,7 @@ export function LandingPage() {
             },
             {
               title: 'Private',
-              desc: 'Optional host approval and room locking.',
+              desc: 'Host approval required and room locking.',
             },
           ].map((feature) => (
             <div
