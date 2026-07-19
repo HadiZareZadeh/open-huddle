@@ -248,6 +248,45 @@ warn_if_not_git_repo() {
   echo "Note: not a git repository — option 4 (update) will not work until you clone or init git." >&2
 }
 
+ensure_git_repo() {
+  local repo_url="${GIT_REPO:-}"
+  if [ -z "$repo_url" ]; then
+    return 0
+  fi
+
+  ensure_app_user
+  git config --global --add safe.directory "$ROOT" 2>/dev/null || true
+
+  if [ -d .git ]; then
+    if ! sudo -u "$APP_USER" git -C "$ROOT" remote get-url origin >/dev/null 2>&1; then
+      sudo -u "$APP_USER" git -C "$ROOT" remote add origin "$repo_url"
+    fi
+    echo "Fetching latest from ${repo_url} ..."
+    sudo -u "$APP_USER" git -C "$ROOT" fetch origin main
+    sudo -u "$APP_USER" git -C "$ROOT" checkout -B main origin/main
+    sudo -u "$APP_USER" git -C "$ROOT" branch --set-upstream-to=origin/main main
+    sudo -u "$APP_USER" git -C "$ROOT" config pull.ff only
+    return 0
+  fi
+
+  if [ -n "$(ls -A "$ROOT" 2>/dev/null | grep -v '^\.env$' | grep -v '^data$' || true)" ]; then
+    echo "Linking existing deployment at ${ROOT} to ${repo_url} ..."
+    sudo -u "$APP_USER" git -C "$ROOT" init
+    sudo -u "$APP_USER" git -C "$ROOT" remote add origin "$repo_url"
+    sudo -u "$APP_USER" git -C "$ROOT" fetch origin main
+    sudo -u "$APP_USER" git -C "$ROOT" checkout -B main origin/main
+    sudo -u "$APP_USER" git -C "$ROOT" branch --set-upstream-to=origin/main main
+    sudo -u "$APP_USER" git -C "$ROOT" config pull.ff only
+    chown -R "${APP_USER}:${APP_USER}" "$ROOT/.git"
+    echo "Git repository ready — option 4 (update) is enabled."
+    return 0
+  fi
+
+  echo "Cloning ${repo_url} into ${ROOT} ..."
+  sudo -u "$APP_USER" git clone "$repo_url" "$ROOT"
+  sudo -u "$APP_USER" git -C "$ROOT" config pull.ff only
+}
+
 configure_firewall() {
   TURN_PORT="${TURN_PORT:-3478}"
   TURN_RELAY_MIN_PORT="${TURN_RELAY_MIN_PORT:-49152}"
@@ -670,7 +709,7 @@ print_install_summary() {
 cmd_install() {
   require_root install
   ensure_app_user
-  warn_if_not_git_repo
+  ensure_git_repo
   ensure_production_env
   load_env
 
@@ -738,8 +777,9 @@ cmd_update() {
   load_env
   detect_deploy_mode
 
+  ensure_git_repo
   if [ ! -d .git ]; then
-    echo "Not a git repository — cannot pull updates." >&2
+    echo "Not a git repository — set GIT_REPO and re-run install, or clone manually." >&2
     exit 1
   fi
 

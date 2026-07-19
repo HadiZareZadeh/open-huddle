@@ -99,15 +99,15 @@ if "!DOMAIN!"=="" (
 call :save_config
 echo Running fresh install on %SSH_HOST% for %DOMAIN% ...
 if defined GIT_REPO (
-  echo Ensuring repository exists at %APP_DIR% ...
-  call :run_remote "mkdir -p '%APP_DIR%' && if [ ! -d '%APP_DIR%/.git' ]; then git clone '%GIT_REPO%' '%APP_DIR%'; fi"
+  echo Ensuring git repository at %APP_DIR% ...
+  call :run_remote "mkdir -p '%APP_DIR%'"
   if errorlevel 1 goto install_failed
 ) else (
   echo Uploading project files to %APP_DIR% ...
   call :sync_project
   if errorlevel 1 goto install_failed
 )
-call :run_remote_sudo "cd '%APP_DIR%' && DOMAIN='!DOMAIN!' CERTBOT_EMAIL='!CERTBOT_EMAIL!' bash scripts/deploy.sh install"
+call :run_remote_sudo "cd '%APP_DIR%' && DOMAIN='!DOMAIN!' CERTBOT_EMAIL='!CERTBOT_EMAIL!' GIT_REPO='!GIT_REPO!' bash scripts/deploy.sh install"
 if errorlevel 1 goto install_failed
 echo.
 echo Install finished.
@@ -133,7 +133,7 @@ goto menu
 
 :do_update
 echo.
-call :run_remote_sudo "cd '%APP_DIR%' && bash scripts/deploy.sh update"
+call :run_remote_sudo "cd '%APP_DIR%' && GIT_REPO='!GIT_REPO!' bash scripts/deploy.sh update"
 pause
 goto menu
 
