@@ -1,0 +1,18 @@
+upstream video_call_app {
+    server 127.0.0.1:3001;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name __DOMAIN__;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 200 'video-call setup\n';
+        add_header Content-Type text/plain;
+    }
+}

@@ -1,0 +1,87 @@
+services:
+  app:
+    build: .
+    container_name: video-call-app
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+      - NODE_OPTIONS=--max-old-space-size=256
+      - PORT=3001
+      - FRONTEND_DIST=../frontend/dist
+      - CORS_ORIGINS=https://${DOMAIN}
+      - TURN_HOST=${DOMAIN}
+    networks:
+      - video-call-net
+    depends_on:
+      coturn:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.8"
+
+  coturn:
+    image: coturn/coturn:4.6.2-alpine
+    container_name: video-call-coturn
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      - TURN_EXTERNAL_IP=${TURN_EXTERNAL_IP:-}
+    volumes:
+      - ./docker/coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - ./docker/coturn/entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: video-call-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/templates:/etc/nginx/templates:ro
+      - ./frontend/dist:/usr/share/video-call:ro
+      - ./docker/certbot/www:/var/www/certbot:ro
+      - ./docker/certbot/conf:/etc/letsencrypt:ro
+    depends_on:
+      - app
+    networks:
+      - video-call-net
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.2"
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: video-call-certbot
+    restart: unless-stopped
+    volumes:
+      - ./docker/certbot/conf:/etc/letsencrypt
+      - ./docker/certbot/www:/var/www/certbot
+    entrypoint: /bin/sh
+    command: -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"
+    depends_on:
+      - nginx
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.1"
+
+networks:
+  video-call-net:
+    driver: bridge

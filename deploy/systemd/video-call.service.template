@@ -1,0 +1,20 @@
+[Unit]
+Description=Video Call application
+After=network.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_USER__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=__APP_DIR__/.env
+Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=256
+ExecStart=/usr/bin/node backend/dist/index.js
+Restart=on-failure
+RestartSec=5
+MemoryMax=384M
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,30 @@
+{
+  "name": "video-call",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Self-hosted small-group video meeting application",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:with-turn": "npm run coturn:dev && concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:lan": "concurrently -n backend,frontend -c blue,green \"npm run dev:backend\" \"npm run dev:host --workspace=frontend\"",
+    "dev:lan:with-turn": "npm run coturn:dev && npm run dev:lan",
+    "coturn:dev": "node scripts/start-coturn.mjs",
+    "coturn:dev:down": "node scripts/stop-coturn.mjs",
+    "dev:backend": "npm run dev --workspace=backend",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "build": "npm run build --workspace=backend && npm run build --workspace=frontend",
+    "start": "npm run start --workspace=backend",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

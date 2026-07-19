@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply box-border;
+  }
+
+  html {
+    @apply h-full overflow-x-hidden;
+  }
+
+  body {
+    @apply min-h-full overflow-x-hidden antialiased;
+    min-height: 100dvh;
+  }
+
+  #root {
+    @apply min-h-full;
+    min-height: 100dvh;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-surface-light;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-surface-lighter rounded-full;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-accent px-6 py-3 font-medium text-surface transition hover:bg-accent-hover focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-surface-lighter px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-surface-lighter focus:ring-offset-2 focus:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-danger px-4 py-2 text-sm font-medium text-surface transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-danger focus:ring-offset-2 focus:ring-offset-surface;
+  }
+
+  .control-btn {
+    @apply flex h-9 w-9 items-center justify-center rounded-full bg-surface-lighter text-white transition hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50 sm:h-12 sm:w-12;
+  }
+
+  .control-btn.active {
+    @apply bg-accent text-surface;
+  }
+
+  .control-btn.off {
+    @apply bg-danger text-white;
+  }
+
+  .input-field {
+    @apply w-full rounded-lg border border-surface-lighter bg-surface-light px-4 py-2.5 text-white placeholder-gray-500 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent;
+  }
+
+  .select-field {
+    @apply w-full rounded-lg border border-surface-lighter bg-surface-light px-4 py-2.5 text-white focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent;
+  }
+}
