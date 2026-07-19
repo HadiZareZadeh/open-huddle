@@ -343,5 +343,10 @@ if errorlevel 1 (
   exit /b 1
 )
 if not defined SSH_KEY call :resolve_ssh_key
-tar -czf - --exclude=node_modules --exclude=frontend/node_modules --exclude=backend/node_modules --exclude=frontend/dist --exclude=backend/dist --exclude=.git --exclude=.env --exclude=deploy.local.bat -C "%CD%" . | ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "tar -xzf - -C '%APP_DIR%'"
+set "ARCHIVE=%TEMP%\video-call-deploy.tgz"
+tar -czf "%ARCHIVE%" --exclude=node_modules --exclude=frontend/node_modules --exclude=backend/node_modules --exclude=frontend/dist --exclude=backend/dist --exclude=.git --exclude=.env --exclude=deploy.local.bat -C "%CD%" .
+if errorlevel 1 exit /b 1
+scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -i "%SSH_KEY%" "%ARCHIVE%" %SSH_USER%@%SSH_HOST%:/tmp/video-call-deploy.tgz
+if errorlevel 1 exit /b 1
+call :run_remote "find '%APP_DIR%' -name '*.sh' -exec sed -i 's/\r$//' {} + 2>/dev/null; tar -xzf /tmp/video-call-deploy.tgz -C '%APP_DIR%' && rm -f /tmp/video-call-deploy.tgz && find '%APP_DIR%' -name '*.sh' -exec sed -i 's/\r$//' {} +"
 exit /b %ERRORLEVEL%

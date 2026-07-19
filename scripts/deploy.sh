@@ -75,6 +75,7 @@ ensure_production_env() {
     fi
     echo "Creating production .env ..."
     cp .env.example .env
+    sed -i 's/\r$//' .env 2>/dev/null || true
     fresh_env=1
   fi
 
@@ -139,6 +140,7 @@ ensure_production_env() {
   set_env_var RATE_LIMIT_MAX 100
   set_env_var HOST 0.0.0.0
   set_env_var PORT 3001
+  sed -i 's/\r$//' .env 2>/dev/null || true
   if [ "$DEPLOY_IP_MODE" -eq 1 ]; then
     set_env_var DEPLOY_USE_IP 1
   else
@@ -184,9 +186,16 @@ load_env_optional() {
 }
 
 ensure_app_user() {
-  APP_USER="${SUDO_USER:-${DEPLOY_USER:-$USER}}"
-  if [ -z "$APP_USER" ] || [ "$APP_USER" = "root" ]; then
-    APP_USER="${DEPLOY_USER:-ubuntu}"
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    APP_USER="$SUDO_USER"
+  elif [ -n "${DEPLOY_USER:-}" ]; then
+    APP_USER="$DEPLOY_USER"
+  elif id "${USER:-root}" >/dev/null 2>&1; then
+    APP_USER="${USER:-root}"
+  elif id ubuntu >/dev/null 2>&1; then
+    APP_USER=ubuntu
+  else
+    APP_USER=root
   fi
   APP_DIR="$ROOT"
 }
@@ -213,17 +222,17 @@ install_node() {
 
 install_packages() {
   if [ "$DEPLOY_IP_MODE" -eq 1 ]; then
-    echo "Installing system packages (coturn, nginx, git, ufw) ..."
+    echo "Installing system packages (coturn, nginx, git, ufw, build tools) ..."
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
-      coturn nginx curl git ufw openssl
+      coturn nginx curl git ufw openssl build-essential python3
     return 0
   fi
 
-  echo "Installing system packages (coturn, nginx, certbot, git, ufw) ..."
+  echo "Installing system packages (coturn, nginx, certbot, git, ufw, build tools) ..."
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    coturn nginx certbot python3-certbot-nginx curl git ufw openssl
+    coturn nginx certbot python3-certbot-nginx curl git ufw openssl build-essential python3
 }
 
 warn_if_not_git_repo() {
@@ -252,6 +261,23 @@ configure_firewall() {
   ufw allow "${TURN_RELAY_MIN_PORT}:${TURN_RELAY_MAX_PORT}/udp"
   ufw --force enable
   ufw status verbose || true
+}
+
+fix_nginx_no_ipv6() {
+  if [ -f /proc/net/if_inet6 ] && [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo 1)" = "0" ]; then
+    return 0
+  fi
+
+  echo "Disabling IPv6 nginx listeners (IPv6 unavailable on this host) ..."
+  local f
+  for f in /etc/nginx/nginx.conf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default; do
+    [ -f "$f" ] || continue
+    sed -i 's/^[[:space:]]*listen \[::\]:/# listen [::]:/g' "$f"
+  done
+  if command -v nginx >/dev/null 2>&1; then
+    nginx -t 2>/dev/null && systemctl restart nginx 2>/dev/null || true
+  fi
+  dpkg --configure -a 2>/dev/null || true
 }
 
 build_app() {
@@ -294,6 +320,14 @@ EOF
 
   mkdir -p /var/log/turnserver
   chown turnserver:turnserver /var/log/turnserver /etc/coturn/video-call.conf
+}
+
+disable_default_coturn() {
+  if systemctl list-unit-files coturn.service >/dev/null 2>&1; then
+    echo "Disabling default coturn service (using coturn-video-call instead) ..."
+    systemctl stop coturn 2>/dev/null || true
+    systemctl disable coturn 2>/dev/null || true
+  fi
 }
 
 configure_systemd() {
@@ -476,22 +510,100 @@ show_cert_renewal_status() {
   fi
 }
 
-maybe_add_swap() {
-  if swapon --show | grep -q '/swapfile'; then
-    return 0
-  fi
+ensure_swap() {
+  local swapfile=/swapfile
+  local swap_mb="${DEPLOY_SWAP_MB:-512}"
+
   if [ "${DEPLOY_SKIP_SWAP:-0}" != "0" ]; then
     echo "Skipping swap setup (DEPLOY_SKIP_SWAP=1)."
     return 0
   fi
-  echo "Adding 512 MB swap (recommended for 1 GB RAM servers) ..."
-  fallocate -l 512M /swapfile
-  chmod 600 /swapfile
-  mkswap /swapfile
-  swapon /swapfile
-  if ! grep -q '/swapfile' /etc/fstab; then
-    echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+  if [ ! -f "$swapfile" ]; then
+    echo "Creating ${swap_mb} MB swap at ${swapfile} ..."
+    if ! fallocate -l "${swap_mb}M" "$swapfile" 2>/dev/null; then
+      dd if=/dev/zero of="$swapfile" bs=1M count="$swap_mb" status=none
+    fi
+    chmod 600 "$swapfile"
+    mkswap "$swapfile"
   fi
+
+  if ! grep -q "^${swapfile}[[:space:]]" /etc/fstab; then
+    echo "${swapfile} none swap sw 0 0" >> /etc/fstab
+    echo "Registered ${swapfile} in /etc/fstab (swap persists across reboots)."
+  fi
+
+  if ! swapon --show | grep -q "${swapfile}"; then
+    swapon "$swapfile"
+  fi
+
+  echo "Swap ready: $(swapon --show | grep "${swapfile}" || swapon --show)"
+}
+
+verify_deployment() {
+  echo "Verifying browser readiness ..."
+  local failed=0
+  local -a curl_opts=()
+
+  if [ "$DEPLOY_IP_MODE" -eq 1 ]; then
+    curl_opts=(-k)
+  fi
+
+  for svc in "${SERVICES[@]}"; do
+    if ! systemctl is-active --quiet "$svc"; then
+      echo "  FAIL: ${svc} is not running" >&2
+      failed=1
+    fi
+  done
+
+  if systemctl is-active --quiet coturn 2>/dev/null; then
+    echo "  FAIL: default coturn service is still running (conflicts with coturn-video-call)" >&2
+    failed=1
+  fi
+
+  if ! curl "${curl_opts[@]}" -fsS "https://${DOMAIN}/api/health" >/dev/null; then
+    echo "  FAIL: /api/health" >&2
+    failed=1
+  else
+    echo "  OK: /api/health"
+  fi
+
+  if ! curl "${curl_opts[@]}" -fsS "https://${DOMAIN}/api/config/ice" | grep -q '"iceServers"'; then
+    echo "  FAIL: /api/config/ice" >&2
+    failed=1
+  else
+    echo "  OK: /api/config/ice"
+  fi
+
+  if ! curl "${curl_opts[@]}" -fsS -o /dev/null "https://${DOMAIN}/"; then
+    echo "  FAIL: frontend (/) " >&2
+    failed=1
+  else
+    echo "  OK: frontend (/)"
+  fi
+
+  if ! curl "${curl_opts[@]}" -fsS -o /dev/null \
+    "https://${DOMAIN}/socket.io/?EIO=4&transport=polling"; then
+    echo "  FAIL: socket.io" >&2
+    failed=1
+  else
+    echo "  OK: socket.io"
+  fi
+
+  if ! curl "${curl_opts[@]}" -fsS -X POST "https://${DOMAIN}/api/meetings" \
+    -H 'Content-Type: application/json' -d '{}' | grep -q '"id"'; then
+    echo "  FAIL: POST /api/meetings" >&2
+    failed=1
+  else
+    echo "  OK: POST /api/meetings"
+  fi
+
+  if [ "$failed" -ne 0 ]; then
+    echo "Deployment verification failed — site is not ready." >&2
+    exit 1
+  fi
+
+  echo "All checks passed — site is ready to use in the browser."
 }
 
 print_install_summary() {
@@ -504,6 +616,9 @@ print_install_summary() {
   echo "  STUN/TURN: ${DOMAIN}:${TURN_PORT}"
   echo
   echo "Firewall (UFW): 22, 80, 443, ${TURN_PORT}/tcp+udp, ${TURN_RELAY_MIN_PORT}-${TURN_RELAY_MAX_PORT}/udp"
+  if swapon --show | grep -q '/swapfile'; then
+    echo "Swap: /swapfile enabled permanently via /etc/fstab"
+  fi
   echo
   if [ "$DEPLOY_IP_MODE" -eq 1 ]; then
     echo "IP-only mode: self-signed HTTPS is enabled."
@@ -531,7 +646,9 @@ cmd_install() {
 
   install_node
   install_packages
+  fix_nginx_no_ipv6
   configure_firewall
+  ensure_swap
   build_app
   configure_coturn
   configure_systemd
@@ -541,12 +658,13 @@ cmd_install() {
   if [ "$DEPLOY_IP_MODE" -eq 0 ]; then
     configure_certbot_renewal
   fi
-  maybe_add_swap
 
+  disable_default_coturn
   systemctl restart coturn-video-call
   systemctl restart video-call
   systemctl reload nginx
 
+  verify_deployment
   print_install_summary
 }
 
