@@ -222,28 +222,57 @@ Optional `.env` tuning:
 
 ## Production Deployment (native Linux, no Docker)
 
-On Ubuntu/Debian, configure `.env` then run:
+### Windows: `deploy.bat`
+
+From the project root on Windows, run `deploy.bat`. It will:
+
+1. Prompt for server SSH details, **DOMAIN or public IP**, and **CERTBOT_EMAIL**
+2. Generate an SSH key on first run (password prompted once)
+3. Upload the project and run `scripts/deploy.sh install`
+
+Menu options: fresh install, status, restart, update from repo.
+
+**IP-only (`94.141.97.223`):** uses a **trusted Let's Encrypt IP certificate** (short-lived ~6 days, auto-renewed every 5 days). `CERTBOT_EMAIL` is required.
+
+**Domain:** uses a standard 90-day Let's Encrypt certificate with automatic renewal.
+
+### Linux server: `scripts/deploy.sh`
 
 ```bash
 cp .env.example .env
-# Edit .env: DOMAIN, TURN_SECRET, CERTBOT_EMAIL, TURN_HOST=$DOMAIN
+# Or let install create .env — set DOMAIN, CERTBOT_EMAIL via environment:
 
-npm install
+sudo DOMAIN=meet.example.com CERTBOT_EMAIL=you@example.com ./scripts/deploy.sh install
+# IP-only:
+sudo DOMAIN=203.0.113.10 CERTBOT_EMAIL=you@example.com ./scripts/deploy.sh install
+```
+
+Or use the interactive menu:
+
+```bash
+sudo ./scripts/deploy.sh
+```
+
+Legacy entry point (delegates to `deploy.sh install`):
+
+```bash
 sudo ./scripts/setup-linux-native.sh
 ```
 
-This script:
-1. Installs **coturn**, **nginx**, and **certbot**
-2. Builds the app (`npm ci && npm run build`)
-3. Installs systemd services for the app and coturn
-4. Configures nginx reverse proxy with HTTPS
-5. Requests a Let's Encrypt certificate
+Fresh install is idempotent (safe to re-run) and will:
+
+1. Install Node.js 20, **coturn**, **nginx**, **certbot** (snap upgrade for IP cert support)
+2. Add permanent **swap**, configure **UFW** firewall
+3. Build the app (`npm ci && npm run build`)
+4. Install systemd services, disable conflicting default coturn
+5. Request **Let's Encrypt** certificate (domain or short-lived **IP certificate**)
+6. Verify health, ICE, frontend, Socket.IO, and meeting creation before finishing
 
 Verify:
 
 ```bash
-curl https://your-domain.com/api/health
-curl https://your-domain.com/api/config/ice
+curl https://your-domain-or-ip/api/health
+curl https://your-domain-or-ip/api/config/ice
 ```
 
 Open firewall ports:

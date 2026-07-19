@@ -47,7 +47,7 @@ echo   Server : %SSH_USER%@%SSH_HOST%
 echo   App dir: %APP_DIR%
 if defined DOMAIN (
   if defined DEPLOY_IP (
-    echo   Access : https://%DOMAIN% ^(IP, self-signed cert^)
+    echo   Access : https://%DOMAIN% ^(IP, Let's Encrypt^)
   ) else (
     echo   Domain : %DOMAIN%
   )
@@ -80,17 +80,16 @@ if not defined DOMAIN (
   if "!DOMAIN!"=="" set "DOMAIN=!SSH_HOST!"
 )
 call :detect_ip_mode
-if not defined DEPLOY_IP (
-  if not defined CERTBOT_EMAIL (
-    set /p "CERTBOT_EMAIL=Let's Encrypt email: "
-  )
-  if "!CERTBOT_EMAIL!"=="" (
-    echo ERROR: CERTBOT_EMAIL is required for domain deployments.
-    pause
-    goto menu
-  )
-) else (
-  echo IP-only mode: self-signed HTTPS, no Let's Encrypt email needed.
+if not defined CERTBOT_EMAIL (
+  set /p "CERTBOT_EMAIL=Let's Encrypt email: "
+)
+if "!CERTBOT_EMAIL!"=="" (
+  echo ERROR: CERTBOT_EMAIL is required.
+  pause
+  goto menu
+)
+if defined DEPLOY_IP (
+  echo IP-only mode: trusted HTTPS via Let's Encrypt IP certificate.
 )
 if "!DOMAIN!"=="" (
   echo ERROR: DOMAIN or public IP is required.
@@ -108,17 +107,13 @@ if defined GIT_REPO (
   call :sync_project
   if errorlevel 1 goto install_failed
 )
-if defined DEPLOY_IP (
-  call :run_remote_sudo "cd '%APP_DIR%' && DOMAIN='!DOMAIN!' bash scripts/deploy.sh install"
-) else (
-  call :run_remote_sudo "cd '%APP_DIR%' && DOMAIN='!DOMAIN!' CERTBOT_EMAIL='!CERTBOT_EMAIL!' bash scripts/deploy.sh install"
-)
+call :run_remote_sudo "cd '%APP_DIR%' && DOMAIN='!DOMAIN!' CERTBOT_EMAIL='!CERTBOT_EMAIL!' bash scripts/deploy.sh install"
 if errorlevel 1 goto install_failed
 echo.
 echo Install finished.
 echo Site ready: https://%DOMAIN%
 if defined DEPLOY_IP (
-  echo Accept the browser certificate warning on first visit.
+  echo Trusted HTTPS via Let's Encrypt IP certificate ^(renews every 5 days^).
 )
 echo.
 pause
@@ -169,12 +164,8 @@ if not "!GIT_REPO!"=="" set "GIT_REPO=!GIT_REPO!"
 set /p "DOMAIN=Domain or public IP [%DOMAIN%]: "
 if not "!DOMAIN!"=="" set "DOMAIN=!DOMAIN!"
 call :detect_ip_mode
-if not defined DEPLOY_IP (
-  set /p "CERTBOT_EMAIL=Let's Encrypt email [%CERTBOT_EMAIL%]: "
-  if not "!CERTBOT_EMAIL!"=="" set "CERTBOT_EMAIL=!CERTBOT_EMAIL!"
-) else (
-  set "CERTBOT_EMAIL="
-)
+set /p "CERTBOT_EMAIL=Let's Encrypt email [%CERTBOT_EMAIL%]: "
+if not "!CERTBOT_EMAIL!"=="" set "CERTBOT_EMAIL=!CERTBOT_EMAIL!"
 set /p "SSH_KEY=Path to SSH private key (leave blank for auto) [%SSH_KEY%]: "
 if "!SSH_KEY!"=="" (
   set "SSH_KEY=%DEFAULT_SSH_KEY%"
@@ -193,11 +184,7 @@ pause
 goto menu
 
 :ensure_config
-if defined SSH_HOST if defined SSH_USER if defined APP_DIR if defined DOMAIN (
-  call :detect_ip_mode
-  if defined DEPLOY_IP goto ensure_config_done
-  if defined CERTBOT_EMAIL goto ensure_config_done
-)
+if defined SSH_HOST if defined SSH_USER if defined APP_DIR if defined DOMAIN if defined CERTBOT_EMAIL goto ensure_config_done
 echo First-time setup — enter your Ubuntu server details.
 echo.
 if not defined SSH_HOST set /p "SSH_HOST=Server host/IP: "
@@ -218,13 +205,11 @@ if "!DOMAIN!"=="" (
   exit /b 1
 )
 call :detect_ip_mode
-if not defined DEPLOY_IP (
-  if not defined CERTBOT_EMAIL set /p "CERTBOT_EMAIL=Let's Encrypt email: "
-  if "!CERTBOT_EMAIL!"=="" (
-    echo ERROR: CERTBOT_EMAIL is required for domain deployments.
-    pause
-    exit /b 1
-  )
+if not defined CERTBOT_EMAIL set /p "CERTBOT_EMAIL=Let's Encrypt email: "
+if "!CERTBOT_EMAIL!"=="" (
+  echo ERROR: CERTBOT_EMAIL is required.
+  pause
+  exit /b 1
 )
 :ensure_config_done
 if defined DOMAIN call :detect_ip_mode
