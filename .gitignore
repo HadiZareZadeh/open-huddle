@@ -3,6 +3,7 @@ dist/
 build/
 .env
 .env.local
+deploy.local.bat
 .coturn/
 data/
 *.log
