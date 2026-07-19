@@ -6,9 +6,13 @@ cd /d "%~dp0"
 REM Optional local overrides (create deploy.local.bat — not committed):
 REM   set "SSH_HOST=203.0.113.10"
 REM   set "SSH_USER=ubuntu"
-REM   set "SSH_KEY=C:\Users\you\.ssh\id_ed25519"
+REM   set "SSH_KEY=C:\Users\you\.ssh\video-call-deploy"
 REM   set "APP_DIR=/opt/video-call"
+REM If no SSH key exists, deploy.bat creates %USERPROFILE%\.ssh\video-call-deploy
+REM and asks for the server password once to install it.
 REM   set "GIT_REPO=https://github.com/you/video-call.git"
+REM   set "DOMAIN=203.0.113.10"
+REM   set "CERTBOT_EMAIL=you@example.com"
 if exist deploy.local.bat call deploy.local.bat
 
 where ssh >nul 2>&1
@@ -18,7 +22,19 @@ if errorlevel 1 (
   exit /b 1
 )
 
+where ssh-keygen >nul 2>&1
+if errorlevel 1 (
+  echo ERROR: ssh-keygen not found. Install "OpenSSH Client" from Windows Optional Features.
+  pause
+  exit /b 1
+)
+
+set "DEFAULT_SSH_KEY=%USERPROFILE%\.ssh\video-call-deploy"
+
 call :ensure_config
+if errorlevel 1 exit /b 1
+
+call :setup_ssh_access
 if errorlevel 1 exit /b 1
 
 :menu
@@ -29,7 +45,13 @@ echo  ==============================
 echo.
 echo   Server : %SSH_USER%@%SSH_HOST%
 echo   App dir: %APP_DIR%
-if defined DOMAIN echo   Domain : %DOMAIN%
+if defined DOMAIN (
+  if defined DEPLOY_IP (
+    echo   Access : https://%DOMAIN% ^(IP, self-signed cert^)
+  ) else (
+    echo   Domain : %DOMAIN%
+  )
+)
 echo.
 echo   1. Fresh install ^(safe re-run^)
 echo   2. View services status
@@ -54,18 +76,24 @@ goto menu
 :do_install
 echo.
 if not defined DOMAIN (
-  set /p "DOMAIN=DOMAIN (public hostname, e.g. meet.example.com): "
+  set /p "DOMAIN=Domain or public IP [%SSH_HOST%]: "
+  if "!DOMAIN!"=="" set "DOMAIN=!SSH_HOST!"
 )
-if not defined CERTBOT_EMAIL (
-  set /p "CERTBOT_EMAIL=Let's Encrypt email: "
+call :detect_ip_mode
+if not defined DEPLOY_IP (
+  if not defined CERTBOT_EMAIL (
+    set /p "CERTBOT_EMAIL=Let's Encrypt email: "
+  )
+  if "!CERTBOT_EMAIL!"=="" (
+    echo ERROR: CERTBOT_EMAIL is required for domain deployments.
+    pause
+    goto menu
+  )
+) else (
+  echo IP-only mode: self-signed HTTPS, no Let's Encrypt email needed.
 )
 if "!DOMAIN!"=="" (
-  echo ERROR: DOMAIN is required.
-  pause
-  goto menu
-)
-if "!CERTBOT_EMAIL!"=="" (
-  echo ERROR: CERTBOT_EMAIL is required.
+  echo ERROR: DOMAIN or public IP is required.
   pause
   goto menu
 )
@@ -80,11 +108,18 @@ if defined GIT_REPO (
   call :sync_project
   if errorlevel 1 goto install_failed
 )
-call :run_remote_sudo "cd '%APP_DIR%' && DOMAIN='!DOMAIN!' CERTBOT_EMAIL='!CERTBOT_EMAIL!' bash scripts/deploy.sh install"
+if defined DEPLOY_IP (
+  call :run_remote_sudo "cd '%APP_DIR%' && DOMAIN='!DOMAIN!' bash scripts/deploy.sh install"
+) else (
+  call :run_remote_sudo "cd '%APP_DIR%' && DOMAIN='!DOMAIN!' CERTBOT_EMAIL='!CERTBOT_EMAIL!' bash scripts/deploy.sh install"
+)
 if errorlevel 1 goto install_failed
 echo.
 echo Install finished.
 echo Site ready: https://%DOMAIN%
+if defined DEPLOY_IP (
+  echo Accept the browser certificate warning on first visit.
+)
 echo.
 pause
 goto menu
@@ -110,9 +145,14 @@ goto menu
 :install_failed
 echo.
 echo Install failed. Common fixes:
-echo   - Point DNS for %DOMAIN% to %SSH_HOST% before requesting certificates
-echo   - Ensure the server provider firewall also allows ports 80, 443, 3478
-echo   - For testing, set CERTBOT_STAGING=1 in server .env and re-run install
+if defined DEPLOY_IP (
+  echo   - Ensure ports 80, 443, and 3478 are open on the server and VPS provider firewall
+  echo   - Use the server public IP as DOMAIN
+) else (
+  echo   - Point DNS for %DOMAIN% to %SSH_HOST% before requesting certificates
+  echo   - Ensure the server provider firewall also allows ports 80, 443, 3478
+  echo   - For testing, set CERTBOT_STAGING=1 in server .env and re-run install
+)
 pause
 goto menu
 
@@ -124,21 +164,40 @@ set /p "SSH_USER=SSH username [%SSH_USER%]: "
 if not "!SSH_USER!"=="" set "SSH_USER=!SSH_USER!"
 set /p "APP_DIR=App directory on server [%APP_DIR%]: "
 if not "!APP_DIR!"=="" set "APP_DIR=!APP_DIR!"
-:set /p "GIT_REPO=Git clone URL (optional) [%GIT_REPO%]: "
+set /p "GIT_REPO=Git clone URL (optional) [%GIT_REPO%]: "
 if not "!GIT_REPO!"=="" set "GIT_REPO=!GIT_REPO!"
-set /p "DOMAIN=Domain [%DOMAIN%]: "
+set /p "DOMAIN=Domain or public IP [%DOMAIN%]: "
 if not "!DOMAIN!"=="" set "DOMAIN=!DOMAIN!"
-set /p "CERTBOT_EMAIL=Let's Encrypt email [%CERTBOT_EMAIL%]: "
-if not "!CERTBOT_EMAIL!"=="" set "CERTBOT_EMAIL=!CERTBOT_EMAIL!"
-set /p "SSH_KEY=Path to SSH private key (optional) [%SSH_KEY%]: "
-if not "!SSH_KEY!"=="" set "SSH_KEY=!SSH_KEY!"
+call :detect_ip_mode
+if not defined DEPLOY_IP (
+  set /p "CERTBOT_EMAIL=Let's Encrypt email [%CERTBOT_EMAIL%]: "
+  if not "!CERTBOT_EMAIL!"=="" set "CERTBOT_EMAIL=!CERTBOT_EMAIL!"
+) else (
+  set "CERTBOT_EMAIL="
+)
+set /p "SSH_KEY=Path to SSH private key (leave blank for auto) [%SSH_KEY%]: "
+if "!SSH_KEY!"=="" (
+  set "SSH_KEY=%DEFAULT_SSH_KEY%"
+) else (
+  set "SSH_KEY=!SSH_KEY!"
+)
 call :save_config
+call :setup_ssh_access
+if errorlevel 1 (
+  echo Could not set up SSH access with the new settings.
+  pause
+  goto menu
+)
 echo Settings saved to deploy.local.bat
 pause
 goto menu
 
 :ensure_config
-if defined SSH_HOST if defined SSH_USER if defined APP_DIR if defined DOMAIN if defined CERTBOT_EMAIL exit /b 0
+if defined SSH_HOST if defined SSH_USER if defined APP_DIR if defined DOMAIN (
+  call :detect_ip_mode
+  if defined DEPLOY_IP goto ensure_config_done
+  if defined CERTBOT_EMAIL goto ensure_config_done
+)
 echo First-time setup — enter your Ubuntu server details.
 echo.
 if not defined SSH_HOST set /p "SSH_HOST=Server host/IP: "
@@ -148,29 +207,99 @@ if not "!SSH_USER!"=="" set "SSH_USER=!SSH_USER!"
 if not defined APP_DIR set "APP_DIR=/opt/video-call"
 set /p "APP_DIR=App directory on server [%APP_DIR%]: "
 if not "!APP_DIR!"=="" set "APP_DIR=!APP_DIR!"
-if not defined DOMAIN set /p "DOMAIN=DOMAIN (public hostname, e.g. meet.example.com): "
-if not defined CERTBOT_EMAIL set /p "CERTBOT_EMAIL=Let's Encrypt email: "
+if not defined DOMAIN (
+  set /p "DOMAIN=Domain or public IP [%SSH_HOST%]: "
+  if "!DOMAIN!"=="" set "DOMAIN=!SSH_HOST!"
+)
 if not defined GIT_REPO set /p "GIT_REPO=Git clone URL (optional, for fresh servers): "
 if "!DOMAIN!"=="" (
-  echo ERROR: DOMAIN is required.
+  echo ERROR: DOMAIN or public IP is required.
   pause
   exit /b 1
 )
-if "!CERTBOT_EMAIL!"=="" (
-  echo ERROR: CERTBOT_EMAIL is required.
-  pause
-  exit /b 1
+call :detect_ip_mode
+if not defined DEPLOY_IP (
+  if not defined CERTBOT_EMAIL set /p "CERTBOT_EMAIL=Let's Encrypt email: "
+  if "!CERTBOT_EMAIL!"=="" (
+    echo ERROR: CERTBOT_EMAIL is required for domain deployments.
+    pause
+    exit /b 1
+  )
 )
+:ensure_config_done
+if defined DOMAIN call :detect_ip_mode
 call :save_config
+exit /b 0
+
+:resolve_ssh_key
+if defined SSH_KEY if exist "%SSH_KEY%" exit /b 0
+if exist "%DEFAULT_SSH_KEY%" (
+  set "SSH_KEY=%DEFAULT_SSH_KEY%"
+  exit /b 0
+)
+exit /b 1
+
+:ensure_ssh_key
+call :resolve_ssh_key
+if not errorlevel 1 exit /b 0
+
 echo.
-echo Testing SSH connection ...
-call :run_remote "echo Connected to $(hostname)"
+echo No deployment SSH key found. Creating one ...
+if not exist "%USERPROFILE%\.ssh" mkdir "%USERPROFILE%\.ssh"
+set "SSH_KEY=%DEFAULT_SSH_KEY%"
+if exist "%SSH_KEY%" exit /b 0
+ssh-keygen -t ed25519 -f "%SSH_KEY%" -N "" -C "video-call-deploy" -q
 if errorlevel 1 (
-  echo ERROR: Could not connect to %SSH_USER%@%SSH_HOST%
-  echo Check host, username, key, and firewall rules.
-  pause
+  echo ERROR: Failed to generate SSH key.
   exit /b 1
 )
+echo Created SSH key: %SSH_KEY%
+exit /b 0
+
+:setup_ssh_access
+call :ensure_ssh_key
+if errorlevel 1 exit /b 1
+call :save_config
+
+echo.
+echo Testing SSH connection to %SSH_USER%@%SSH_HOST% ...
+ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo Connected to $(hostname)"
+if not errorlevel 1 (
+  echo SSH key login is ready.
+  exit /b 0
+)
+
+echo.
+echo SSH key is not on the server yet.
+echo Enter your server password when prompted below ^(one-time setup^).
+echo.
+
+if not exist "%SSH_KEY%.pub" (
+  echo ERROR: Missing public key: %SSH_KEY%.pub
+  exit /b 1
+)
+
+type "%SSH_KEY%.pub" | ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 %SSH_USER%@%SSH_HOST% "umask 077; mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+if errorlevel 1 (
+  echo.
+  echo ERROR: Could not install the SSH key. Check username, password, and host.
+  exit /b 1
+)
+
+ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo Connected to $(hostname)"
+if errorlevel 1 (
+  echo ERROR: Key login still failed after setup.
+  exit /b 1
+)
+
+echo SSH key installed on the server. Future runs will not ask for a password.
+call :save_config
+exit /b 0
+
+:detect_ip_mode
+set "DEPLOY_IP="
+echo.%DOMAIN%| findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul
+if not errorlevel 1 set "DEPLOY_IP=1"
 exit /b 0
 
 :save_config
@@ -187,20 +316,22 @@ exit /b 0
 
 :run_remote
 set "REMOTE_CMD=%~1"
-if defined SSH_KEY (
-  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "bash -lc '%REMOTE_CMD%'"
-) else (
-  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new %SSH_USER%@%SSH_HOST% "bash -lc '%REMOTE_CMD%'"
+if not defined SSH_KEY call :resolve_ssh_key
+if not defined SSH_KEY (
+  echo ERROR: SSH key not configured. Run setup again.
+  exit /b 1
 )
+ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "bash -lc '%REMOTE_CMD%'"
 exit /b %ERRORLEVEL%
 
 :run_remote_sudo
 set "REMOTE_CMD=%~1"
-if defined SSH_KEY (
-  ssh -t -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "sudo bash -lc '%REMOTE_CMD%'"
-) else (
-  ssh -t -o BatchMode=yes -o StrictHostKeyChecking=accept-new %SSH_USER%@%SSH_HOST% "sudo bash -lc '%REMOTE_CMD%'"
+if not defined SSH_KEY call :resolve_ssh_key
+if not defined SSH_KEY (
+  echo ERROR: SSH key not configured. Run setup again.
+  exit /b 1
 )
+ssh -t -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "sudo bash -lc '%REMOTE_CMD%'"
 exit /b %ERRORLEVEL%
 
 :sync_project
@@ -211,9 +342,6 @@ if errorlevel 1 (
   echo ERROR: tar is required to upload the project. Set GIT_REPO in deploy.local.bat or install tar.
   exit /b 1
 )
-if defined SSH_KEY (
-  tar -czf - --exclude=node_modules --exclude=frontend/node_modules --exclude=backend/node_modules --exclude=frontend/dist --exclude=backend/dist --exclude=.git --exclude=.env --exclude=deploy.local.bat -C "%CD%" . | ssh -o StrictHostKeyChecking=accept-new -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "tar -xzf - -C '%APP_DIR%'"
-) else (
-  tar -czf - --exclude=node_modules --exclude=frontend/node_modules --exclude=backend/node_modules --exclude=frontend/dist --exclude=backend/dist --exclude=.git --exclude=.env --exclude=deploy.local.bat -C "%CD%" . | ssh -o StrictHostKeyChecking=accept-new %SSH_USER%@%SSH_HOST% "tar -xzf - -C '%APP_DIR%'"
-)
+if not defined SSH_KEY call :resolve_ssh_key
+tar -czf - --exclude=node_modules --exclude=frontend/node_modules --exclude=backend/node_modules --exclude=frontend/dist --exclude=backend/dist --exclude=.git --exclude=.env --exclude=deploy.local.bat -C "%CD%" . | ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "tar -xzf - -C '%APP_DIR%'"
 exit /b %ERRORLEVEL%

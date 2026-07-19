@@ -13,6 +13,20 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 SERVICES=(video-call coturn-video-call nginx)
+DEPLOY_IP_MODE=0
+SSL_IP_DIR=/etc/ssl/video-call
+
+is_ip_address() {
+  [[ "${1:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
+detect_deploy_mode() {
+  if [ "${DEPLOY_USE_IP:-0}" = "1" ] || is_ip_address "${DOMAIN:-}"; then
+    DEPLOY_IP_MODE=1
+  else
+    DEPLOY_IP_MODE=0
+  fi
+}
 
 require_root() {
   if [ "$(id -u)" -ne 0 ]; then
@@ -79,23 +93,32 @@ ensure_production_env() {
 
   if [ -z "$domain" ]; then
     if [ -t 0 ]; then
-      read -r -p "DOMAIN (public hostname, e.g. meet.example.com): " domain
+      read -r -p "DOMAIN or public IP (e.g. meet.example.com or 203.0.113.10): " domain
     else
       echo "DOMAIN is required. Set the DOMAIN environment variable." >&2
       exit 1
     fi
   fi
-  if [ -z "$email" ]; then
+
+  if is_ip_address "$domain"; then
+    DEPLOY_IP_MODE=1
+    email="${email:-deploy@localhost}"
+    echo "IP-only mode: using self-signed HTTPS (Let's Encrypt requires a domain name)."
+  elif [ -z "$email" ]; then
     if [ -t 0 ]; then
       read -r -p "CERTBOT_EMAIL (Let's Encrypt notifications): " email
     else
-      echo "CERTBOT_EMAIL is required. Set the CERTBOT_EMAIL environment variable." >&2
+      echo "CERTBOT_EMAIL is required for domain deployments." >&2
       exit 1
     fi
   fi
 
-  if [ -z "$domain" ] || [ -z "$email" ]; then
-    echo "DOMAIN and CERTBOT_EMAIL are required." >&2
+  if [ -z "$domain" ]; then
+    echo "DOMAIN is required." >&2
+    exit 1
+  fi
+  if [ "$DEPLOY_IP_MODE" -eq 0 ] && [ -z "$email" ]; then
+    echo "CERTBOT_EMAIL is required for domain deployments." >&2
     exit 1
   fi
 
@@ -116,6 +139,11 @@ ensure_production_env() {
   set_env_var RATE_LIMIT_MAX 100
   set_env_var HOST 0.0.0.0
   set_env_var PORT 3001
+  if [ "$DEPLOY_IP_MODE" -eq 1 ]; then
+    set_env_var DEPLOY_USE_IP 1
+  else
+    set_env_var DEPLOY_USE_IP 0
+  fi
 
   chown "${APP_USER}:${APP_USER}" .env
   chmod 600 .env
@@ -138,7 +166,12 @@ load_env() {
 
   : "${DOMAIN:?Set DOMAIN in .env}"
   : "${TURN_SECRET:?Set TURN_SECRET in .env}"
-  : "${CERTBOT_EMAIL:?Set CERTBOT_EMAIL in .env}"
+
+  detect_deploy_mode
+
+  if [ "$DEPLOY_IP_MODE" -eq 0 ]; then
+    : "${CERTBOT_EMAIL:?Set CERTBOT_EMAIL in .env}"
+  fi
 }
 
 load_env_optional() {
@@ -179,6 +212,14 @@ install_node() {
 }
 
 install_packages() {
+  if [ "$DEPLOY_IP_MODE" -eq 1 ]; then
+    echo "Installing system packages (coturn, nginx, git, ufw) ..."
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      coturn nginx curl git ufw openssl
+    return 0
+  fi
+
   echo "Installing system packages (coturn, nginx, certbot, git, ufw) ..."
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -293,6 +334,11 @@ ensure_tls_params() {
 }
 
 obtain_certificate() {
+  if [ "$DEPLOY_IP_MODE" -eq 1 ]; then
+    generate_self_signed_certificate
+    return 0
+  fi
+
   if [ -d "/etc/letsencrypt/live/${DOMAIN}" ]; then
     echo "Let's Encrypt certificate for ${DOMAIN} already exists — skipping issuance."
     return 0
@@ -315,15 +361,44 @@ obtain_certificate() {
     -d "${DOMAIN}"
 }
 
+generate_self_signed_certificate() {
+  echo "Generating self-signed TLS certificate for ${DOMAIN} ..."
+  mkdir -p "$SSL_IP_DIR"
+
+  if [ -f "$SSL_IP_DIR/fullchain.pem" ] && openssl x509 -checkend 86400 -noout -in "$SSL_IP_DIR/fullchain.pem" 2>/dev/null; then
+    echo "Self-signed certificate still valid — keeping existing cert."
+    return 0
+  fi
+
+  openssl req -x509 -nodes -days 825 -newkey rsa:2048 \
+    -keyout "$SSL_IP_DIR/privkey.pem" \
+    -out "$SSL_IP_DIR/fullchain.pem" \
+    -subj "/CN=${DOMAIN}" \
+    -addext "subjectAltName=IP:${DOMAIN}"
+  chmod 644 "$SSL_IP_DIR/fullchain.pem"
+  chmod 600 "$SSL_IP_DIR/privkey.pem"
+}
+
 configure_nginx_https() {
-  ensure_tls_params
   echo "Installing HTTPS nginx site ..."
-  sed \
-    -e "s|__DOMAIN__|${DOMAIN}|g" \
-    -e "s|__APP_DIR__|${APP_DIR}|g" \
-    deploy/nginx/video-call.conf.template \
-    > /etc/nginx/sites-available/video-call.conf
+  if [ "$DEPLOY_IP_MODE" -eq 1 ]; then
+    sed \
+      -e "s|__DOMAIN__|${DOMAIN}|g" \
+      -e "s|__APP_DIR__|${APP_DIR}|g" \
+      deploy/nginx/video-call-ip.conf.template \
+      > /etc/nginx/sites-available/video-call.conf
+  else
+    ensure_tls_params
+    sed \
+      -e "s|__DOMAIN__|${DOMAIN}|g" \
+      -e "s|__APP_DIR__|${APP_DIR}|g" \
+      deploy/nginx/video-call.conf.template \
+      > /etc/nginx/sites-available/video-call.conf
+  fi
+  ln -sf /etc/nginx/sites-available/video-call.conf /etc/nginx/sites-enabled/video-call.conf
+  rm -f /etc/nginx/sites-enabled/default
   nginx -t
+  systemctl enable nginx
   systemctl reload nginx
 }
 
@@ -336,14 +411,69 @@ tune_nginx() {
   fi
 }
 
-configure_certbot_cron() {
-  if [ -f /etc/cron.d/certbot-video-call ]; then
+configure_certbot_renewal() {
+  if [ "$DEPLOY_IP_MODE" -eq 1 ]; then
     return 0
   fi
-  echo "Installing certbot renewal cron ..."
-  cat > /etc/cron.d/certbot-video-call <<'CRON'
-0 3 * * * root certbot renew --quiet --deploy-hook "systemctl reload nginx"
+
+  echo "Configuring Let's Encrypt auto-renewal ..."
+
+  mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+  install -m 755 deploy/certbot/reload-nginx.sh \
+    /etc/letsencrypt/renewal-hooks/deploy/video-call-reload-nginx.sh
+
+  if systemctl list-unit-files certbot.timer >/dev/null 2>&1; then
+    systemctl enable certbot.timer
+    systemctl start certbot.timer
+    echo "Enabled certbot.timer (checks for renewal twice daily)."
+    rm -f /etc/cron.d/certbot-video-call
+  else
+    echo "certbot.timer not found — using cron fallback (3:00 and 15:00 daily)."
+    cat > /etc/cron.d/certbot-video-call <<'CRON'
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+0 3,15 * * * root certbot renew --quiet
 CRON
+    chmod 644 /etc/cron.d/certbot-video-call
+  fi
+}
+
+show_cert_renewal_status() {
+  detect_deploy_mode
+
+  if [ "$DEPLOY_IP_MODE" -eq 1 ]; then
+    echo
+    echo "=== TLS (self-signed, IP-only) ==="
+    if [ -f "$SSL_IP_DIR/fullchain.pem" ]; then
+      openssl x509 -in "$SSL_IP_DIR/fullchain.pem" -noout -subject -dates 2>/dev/null || true
+      echo "Browsers will show a certificate warning — accept it to use camera/microphone."
+      echo "Re-run fresh install to regenerate the cert before it expires (~825 days)."
+    else
+      echo "Self-signed certificate not found at ${SSL_IP_DIR}." >&2
+    fi
+    return 0
+  fi
+
+  echo
+  echo "=== Let's Encrypt auto-renewal ==="
+  if [ -n "${DOMAIN:-}" ] && [ -d "/etc/letsencrypt/live/${DOMAIN}" ]; then
+    certbot certificates 2>/dev/null | sed -n "/Certificate Name: ${DOMAIN}/,/Expiry/p" || true
+  elif command -v certbot >/dev/null 2>&1; then
+    certbot certificates 2>/dev/null || true
+  fi
+
+  if systemctl is-enabled certbot.timer >/dev/null 2>&1; then
+    systemctl status certbot.timer --no-pager -l || true
+  elif [ -f /etc/cron.d/certbot-video-call ]; then
+    echo "Renewal schedule: /etc/cron.d/certbot-video-call"
+    cat /etc/cron.d/certbot-video-call
+  else
+    echo "WARNING: No certbot.timer or renewal cron found." >&2
+  fi
+
+  if [ -x /etc/letsencrypt/renewal-hooks/deploy/video-call-reload-nginx.sh ]; then
+    echo "Deploy hook: reloads nginx after successful renewal."
+  fi
 }
 
 maybe_add_swap() {
@@ -375,9 +505,21 @@ print_install_summary() {
   echo
   echo "Firewall (UFW): 22, 80, 443, ${TURN_PORT}/tcp+udp, ${TURN_RELAY_MIN_PORT}-${TURN_RELAY_MAX_PORT}/udp"
   echo
-  echo "Verify:"
-  echo "  curl https://${DOMAIN}/api/health"
-  echo "  curl https://${DOMAIN}/api/config/ice"
+  if [ "$DEPLOY_IP_MODE" -eq 1 ]; then
+    echo "IP-only mode: self-signed HTTPS is enabled."
+    echo "  Open https://${DOMAIN} in your browser and accept the certificate warning."
+    echo "  Camera/microphone require HTTPS — plain http:// will not work."
+    echo
+    echo "Verify (ignore cert warning):"
+    echo "  curl -k https://${DOMAIN}/api/health"
+  else
+    echo "Verify:"
+    echo "  curl https://${DOMAIN}/api/health"
+    echo "  curl https://${DOMAIN}/api/config/ice"
+    echo
+    echo "TLS: Let's Encrypt auto-renewal enabled (certbot.timer + nginx reload hook)."
+    echo "  Test renewal: sudo certbot renew --dry-run"
+  fi
 }
 
 cmd_install() {
@@ -396,7 +538,9 @@ cmd_install() {
   obtain_certificate
   configure_nginx_https
   tune_nginx
-  configure_certbot_cron
+  if [ "$DEPLOY_IP_MODE" -eq 0 ]; then
+    configure_certbot_renewal
+  fi
   maybe_add_swap
 
   systemctl restart coturn-video-call
@@ -409,6 +553,7 @@ cmd_install() {
 cmd_status() {
   require_root status
   load_env_optional
+  detect_deploy_mode
 
   echo "=== systemd services ==="
   for svc in "${SERVICES[@]}"; do
@@ -419,12 +564,20 @@ cmd_status() {
   if [ -n "${DOMAIN:-}" ]; then
     echo
     echo "=== HTTP health check ==="
-    if curl -fsS "https://${DOMAIN}/api/health" 2>/dev/null; then
+    if [ "$DEPLOY_IP_MODE" -eq 1 ]; then
+      if curl -kfsS "https://${DOMAIN}/api/health" 2>/dev/null; then
+        echo
+      else
+        echo "Health check failed for https://${DOMAIN}/api/health" >&2
+      fi
+    elif curl -fsS "https://${DOMAIN}/api/health" 2>/dev/null; then
       echo
     else
       echo "Health check failed for https://${DOMAIN}/api/health" >&2
     fi
   fi
+
+  show_cert_renewal_status
 }
 
 cmd_restart() {
@@ -443,6 +596,7 @@ cmd_update() {
   require_root update
   ensure_app_user
   load_env
+  detect_deploy_mode
 
   if [ ! -d .git ]; then
     echo "Not a git repository — cannot pull updates." >&2
@@ -461,6 +615,9 @@ cmd_update() {
   systemctl restart coturn-video-call
   systemctl restart video-call
   configure_nginx_https
+  if [ "$DEPLOY_IP_MODE" -eq 0 ]; then
+    configure_certbot_renewal
+  fi
 
   echo "Update complete."
 }
